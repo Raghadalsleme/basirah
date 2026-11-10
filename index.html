@@ -426,11 +426,14 @@ function eyeRegion(landmarksPx, width, height) {
 // whole app is one file that runs on any computer.
 const el = typeof document !== "undefined" ? document.getElementById("basirah-files") : null;
 const FILES = el ? JSON.parse(el.textContent) : {};
+if (el) el.textContent = "";  // the text is not needed any more: frees about 11 MB (phones have little memory)
 const hasFile = (name) => name in FILES;
 
-function fileBytes(name) {
+// keep = false: the file is used once, so its text is dropped after it is read
+function fileBytes(name, keep = true) {
   if (!hasFile(name)) throw new Error(`${name} is not inside index.html`);
   const bin = atob(FILES[name]);
+  if (!keep) delete FILES[name];
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
@@ -981,7 +984,7 @@ class Speaker {
     const info = JSON.parse(new TextDecoder().decode(fileBytes("voice.json")));
     this.source = info.source || "saved voice";
     for (const [phrase, file] of Object.entries(info.phrases || {})) {
-      if (hasFile(file)) this.clips[key(phrase)] = URL.createObjectURL(new Blob([fileBytes(file)], { type: "audio/wav" }));
+      if (hasFile(file)) this.clips[key(phrase)] = URL.createObjectURL(new Blob([fileBytes(file, false)], { type: "audio/wav" }));
     }
   }
 
@@ -1074,7 +1077,10 @@ function cameraKind(label) {
   return "external";
 }
 const KIND_ORDER = { builtin: 0, external: 1, phone: 2 };
-const VIDEO = { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: "user" };  // as in the app
+// a phone gets 1280x720: enough for the eyes, and less memory and work per frame
+const PHONE = typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
+const VIDEO = PHONE ? { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }
+                    : { width: { ideal: 1920 }, height: { ideal: 1080 }, facingMode: "user" };
 
 async function openCamera(video) {
   let stream = await navigator.mediaDevices.getUserMedia({ video: VIDEO, audio: false });
@@ -1101,10 +1107,23 @@ class GazePipeline {
   }
 
   async load(onStatus = () => {}) {
+    // the CNN first, while the memory is still free (a phone has little memory for WebAssembly)
+    onStatus("تحميل نموذج النظر (CNN)");
+    ort.env.wasm.wasmPaths = ORT_WASM;
+    ort.env.wasm.numThreads = 1;  // one thread: the multi-threaded version needs more memory
+    const cnnBytes = fileBytes("cnn.onnx", false);
+    try {
+      this.cnn = await ort.InferenceSession.create(cnnBytes, { executionProviders: ["wasm"] });
+    } catch (e) {  // out of memory once: wait a moment and try again
+      console.warn("CNN failed, trying again", e);
+      await new Promise((r) => setTimeout(r, 800));
+      this.cnn = await ort.InferenceSession.create(cnnBytes, { executionProviders: ["wasm"] });
+    }
     onStatus("تحميل نموذج الوجه (MediaPipe)");
     const vision = await FilesetResolver.forVisionTasks(MP_WASM);
+    const faceBytes = fileBytes("face_landmarker.task", false);
     const options = (delegate) => ({
-      baseOptions: { modelAssetBuffer: fileBytes("face_landmarker.task"), delegate },
+      baseOptions: { modelAssetBuffer: faceBytes.slice(), delegate },
       runningMode: "VIDEO", numFaces: 1, outputFaceBlendshapes: true,
     });
     try {
@@ -1113,9 +1132,6 @@ class GazePipeline {
       console.warn("MediaPipe GPU failed, using the CPU", e);
       this.landmarker = await FaceLandmarker.createFromOptions(vision, options("CPU"));
     }
-    onStatus("تحميل نموذج النظر (CNN)");
-    ort.env.wasm.wasmPaths = ORT_WASM;
-    this.cnn = await ort.InferenceSession.create(fileBytes("cnn.onnx"), { executionProviders: ["wasm"] });
   }
 
   resetTracking() { this.pose = null; }
