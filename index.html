@@ -88,6 +88,27 @@ body[data-screen="start"] #video { position: fixed; z-index: 0; object-fit: cove
 #test-intro { background: rgba(17, 21, 42, .92); }
 #test-intro:empty { display: none; }
 #message-icon svg { width: 90px; height: 90px; color: var(--no); }
+
+/* phones and narrow screens: one column, smaller text, no key hints */
+@media (pointer: coarse) { kbd { display: none; } }
+@media (max-width: 760px) {
+  .start-grid { grid-template-columns: 1fr; gap: 2.5vh; padding: 3vh 6vw 4vh; align-items: start; align-content: start; overflow-y: auto; }
+  .preview-frame { aspect-ratio: 3 / 4; height: 34vh; margin: 0 auto; }
+  h1 { font-size: 30px; margin-bottom: .2em; }
+  .status-col p { font-size: 15px; margin: .3em 0; }
+  .status-row { font-size: 15px; margin: .6em 0; }
+  .buttons { margin-top: .8em; }
+  .buttons button { flex: 1 1 40%; font-size: 16px; padding: .6em .8em; }
+  .center-box h1 { font-size: 26px; }
+  .tile { margin: .8vh 1.2vw; border-radius: 16px; gap: 1vh; }
+  .tile .label { font-size: clamp(13px, 4.2vw, 20px); }
+  .tile .ring { width: min(9vh, 20vw); height: min(9vh, 20vw); }
+  .tile svg { width: min(5vh, 11vw); height: min(5vh, 11vw); }
+  #band { font-size: clamp(16px, 5vw, 26px); }
+  #test-grid div { font-size: clamp(16px, 6vw, 28px); margin: .8vh 1.2vw; }
+  .overlay-text { font-size: 16px; line-height: 1.7; }
+  #board-keys .small-btn { font-size: 12px; padding: .35em .5em; margin: 2px !important; }
+}
 </style>
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.30.0/dist/ort.min.js"></script>
   <script type="module">
@@ -1156,6 +1177,8 @@ const BLINK = 0.45, BLINK_PAD_S = 0.10, TOP_OFFSET_MM = 10;
 const CAL = { name: "full", settle: 1.0, record: 1.5, minValid: 20, minFrames: 1 };
 const QUICK = { name: "quick", settle: 1.0, record: 1.5, minValid: 15, minFrames: 5,
                 targets: [[0.5, 1 / 6], [1 / 6, 5 / 6], [5 / 6, 5 / 6]] };  // top middle, bottom left, bottom right
+const TOUCH = matchMedia("(pointer: coarse)").matches;  // a phone or a tablet: taps instead of keys
+const touchText = (t) => TOUCH ? t.replace(/اضغط مسافة للبدء — Esc لل(رجوع|إلغاء)/, "المس الشاشة للبدء") : t;
 const CAL_INTRO = "المعايرة: ستظهر 16 نقطة، واحدة بعد الأخرى (حوالي 40 ثانية)\n\n" +
   "اجلس على أقرب مسافة ستجلس عليها أثناء الاستخدام\nوحرّك عينيك فقط لا رأسك\n" +
   "انظر إلى الدائرة حتى تصغر، ثم ثبّت نظرك على النقطة حتى تكتمل الحلقة\n\nاضغط مسافة للبدء — Esc للرجوع";
@@ -1172,7 +1195,8 @@ const saveSettings = () => store.set("settings", settings);
 const screenPt = () => [window.screen.width, window.screen.height];
 function screenMm() {
   const [w, h] = screenPt();
-  const width = settings.screenWidthCm ? settings.screenWidthCm * 10 : 0.191 * w;  // 0.191 mm per point: MacBook Air
+  const perPt = matchMedia("(pointer: coarse)").matches && Math.min(w, h) < 600 ? 0.165 : 0.191;  // mm per point: a phone, or a MacBook Air
+  const width = settings.screenWidthCm ? settings.screenWidthCm * 10 : perPt * w;
   return [width, (width * h) / w];
 }
 
@@ -1192,8 +1216,11 @@ function message(title, body) {
   $("message-body").textContent = body;
   show("message");
 }
+// iPhone Safari has no full screen for pages: there the page counts as full screen
+const canFullscreen = () => !!(document.fullscreenEnabled && document.documentElement.requestFullscreen);
+const isFull = () => !canFullscreen() || !!document.fullscreenElement;
 async function fullscreen() {
-  if (!document.fullscreenElement) { try { await document.documentElement.requestFullscreen(); } catch { /* not allowed */ } }
+  if (canFullscreen() && !document.fullscreenElement) { try { await document.documentElement.requestFullscreen(); } catch { /* not allowed */ } }
   await new Promise((r) => setTimeout(r, 400));  // the page has its new size
 }
 function placePreview() {
@@ -1221,9 +1248,10 @@ function onStartFrame(r) {
   $("face-dot").style.background = r.face ? "var(--yes)" : "var(--warn)";
   $("face-title").textContent = r.face ? "الوجه ظاهر للكاميرا" : "لا يظهر وجه";
   $("face-detail").textContent = r.face ? "اجلس كما ستجلس أثناء الاستخدام" : "اقترب من الكاميرا وتأكد من الإضاءة";
+  placePreview();  // the camera image follows its frame (the page can scroll on a phone)
   let line = "";
-  if (!document.fullscreenElement) {
-    line = "انقر أو اضغط أي مفتاح لملء الشاشة";
+  if (!isFull()) {
+    line = TOUCH ? "المس الشاشة لملء الشاشة" : "انقر أو اضغط أي مفتاح لملء الشاشة";
     startState.faceSince = null;
   } else if (app.autoQuick && calibrations().length) {
     if (r.face) {
@@ -1258,7 +1286,7 @@ async function startSequence(cfg) {
   seq = { cfg, targets, queue: targets.map((_, i) => i), retried: new Set(), frames: [], current: null, onset: null,
           intro: cfg.name === "full", introUntil: null };
   app.pipeline.resetTracking();
-  $("target-intro").textContent = cfg.name === "full" ? CAL_INTRO : QUICK_HINT;
+  $("target-intro").textContent = cfg.name === "full" ? touchText(CAL_INTRO) : QUICK_HINT;
   if (cfg.name === "quick") seq.introUntil = performance.now() / 1000 + 1.5;
   show("target");
 }
@@ -1451,7 +1479,7 @@ function onBoardFrame(r) {
 function renderBoard(now) {
   $("sentence").textContent = sentenceText();
   $("band").classList.toggle("spoken", board.spoken && now < board.spokenUntil);
-  $("note").textContent = board.note && now < board.note.until ? board.note.text : board.paused ? "متوقف مؤقتًا (مسافة)" : "";
+  $("note").textContent = board.note && now < board.note.until ? board.note.text : board.paused ? (TOUCH ? "متوقف مؤقتًا" : "متوقف مؤقتًا (مسافة)") : "";
   $("board").classList.toggle("paused", board.paused);
   tiles.forEach((tile, i) => {
     if (!tile) return;
@@ -1477,7 +1505,7 @@ async function startTest() {
   $("test-grid").innerHTML = testLabels.map((w, i) => `<div id="test-${i}">${w}</div>`).join("");
   test = { name: new Date().toISOString().slice(0, 19).replace(/[-:T]/g, ""), calibration: app.mapperInfo,
            trials: trialOrder(), frames: [], k: -1, onset: null, intro: true };
-  $("test-intro").textContent = TEST_INTRO;
+  $("test-intro").textContent = touchText(TEST_INTRO);
   app.pipeline.resetTracking();
   show("gridtest");
 }
@@ -1571,7 +1599,7 @@ $("btn-test-save").onclick = saveTest;
 $("target").addEventListener("click", () => { if (seq && seq.intro) seq.intro = false; });
 $("gridtest").addEventListener("click", () => { if (test && test.intro) { test.intro = false; $("test-intro").textContent = ""; } });
 // on a touch screen the caregiver gets buttons instead of the keys (each button presses its key)
-if (matchMedia("(pointer: coarse)").matches) {
+if (TOUCH) {
   const bar = $("board-keys");
   bar.style.opacity = "1";
   bar.innerHTML = [["إيقاف / متابعة", " "], ["زمن −", "-"], ["زمن +", "+"], ["حذف", "Backspace"], ["رجوع", "Escape"]]
@@ -1616,7 +1644,7 @@ function scheduleFrame() {  // once per new camera frame
 for (const ev of ["click", "keydown"]) {
   document.addEventListener(ev, () => {
     if (app.speaker) app.speaker.unlock();  // sound is allowed from now on
-    if (app.screen === "start" && !document.fullscreenElement) fullscreen();
+    if (app.screen === "start" && !isFull()) fullscreen();
   });
 }
 
