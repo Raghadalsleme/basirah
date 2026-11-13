@@ -114,7 +114,7 @@ body[data-screen="start"] #video { position: fixed; z-index: 0; object-fit: cove
   <script type="module">
 // ===== math =====
 // Small linear algebra for the gaze path (3x3 matrices as arrays of rows, vectors as arrays).
-// Angle conventions as in MPIIGaze and the Python app: pitch = asin(-y), yaw = atan2(-x, -z).
+// Angle conventions as in MPIIGaze (and the training notebook): pitch = asin(-y), yaw = atan2(-x, -z).
 
 const deg = (r) => (r * 180) / Math.PI;
 const rad = (d) => (d * Math.PI) / 180;
@@ -319,7 +319,7 @@ class HeadPoseEstimator {
 
 // ===== eyes =====
 // Turning a camera frame into the eye images the CNN was trained on (MPIIGaze normalisation),
-// and the CNN's output back into a gaze ray. The same steps as sections 4 and 6 of Basirah.ipynb.
+// and the CNN's output back into a gaze ray. The same steps as for the training images.
 //
 //   per eye : z = eye centre direction, R = [x; y; z] with x along the head's x axis
 //             M = diag(1, 1, 600/distance) R,   W = C_NORM M K^-1  -> 60x36 image, equalised
@@ -451,7 +451,7 @@ async function loadFonts() {
 }
 
 // ===== board =====
-// Cursor smoothing, the 3x3 board and selection by looking (sections 11-12 of Basirah.ipynb).
+// Cursor smoothing, the 3x3 board and selection by looking.
 
 // One Euro filter (Casiez et al., CHI 2012): steady while the eyes fixate, fast when they move
 class OneEuroFilter {
@@ -568,7 +568,7 @@ const MAIN_BOARD = [
 ];
 
 // ===== mapping =====
-// Calibration: from the CNN's gaze ray to a point on the screen (sections 8-10 of Basirah.ipynb).
+// Calibration: from the CNN's gaze ray to a point on the screen.
 //
 // PolyRidge: standardise -> polynomial features (degree 1 or 2) -> standardise -> ridge regression,
 // like the scikit-learn pipeline of the app. RayMapper ("B ray"): the correction is learned on the
@@ -842,7 +842,7 @@ function quickQuality(profile, rows, screenPt, boardTop, cols = 3, nRows = 3) {
 }
 
 // ===== gridtest =====
-// The 3x3 test, the project's main metric (as grid_test.py in the Python version).
+// The 3x3 test, the project's main metric.
 //
 // Recording: nine words in a 3x3 grid; one cell at a time is highlighted for 3 s and the user looks
 // at its word. No gaze cursor is shown, so the user cannot steer it: the recording measures the model.
@@ -933,7 +933,7 @@ function errors(frames, trials, pos, screenPt) {
            in_cell_pct: mean(idx.map((i) => (TEST_LAYOUT.cellAt(...pos[i]) === TEST_LAYOUT.cellAt(...target(frames[i])) ? 1 : 0))) * 100 };
 }
 
-// the whole evaluation of a recorded test, saved as JSON (the same fields as the Python version)
+// the whole evaluation of a recorded test, saved as JSON (read by train_and_test.ipynb)
 function evaluate(test, mapper, screenPt) {
   const smooth = replay(test.frames, mapper), raw = replay(test.frames, mapper, false);
   const results = simulateDwell(test.frames, test.trials, smooth);
@@ -1041,7 +1041,7 @@ class Speaker {
 }
 
 // ===== icons =====
-// Lucide icons (ISC licence): the inside of each 24x24 SVG, as in Basirah.ipynb
+// Lucide icons (ISC licence): the inside of each 24x24 SVG
 const ICONS = {
  "bed": "<path d=\"M2 4v16\" /><path d=\"M2 8h18a2 2 0 0 1 2 2v10\" /><path d=\"M2 17h20\" /><path d=\"M6 8v9\" />",
  "camera-off": "<path d=\"M14.564 14.558a3 3 0 1 1-4.122-4.121\" /><path d=\"m2 2 20 20\" /><path d=\"M20 20H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h1.997a2 2 0 0 0 .819-.175\" /><path d=\"M9.695 4.024A2 2 0 0 1 10.004 4h3.993a2 2 0 0 1 1.76 1.05l.486.9A2 2 0 0 0 18.003 7H20a2 2 0 0 1 2 2v7.344\" />",
@@ -1177,6 +1177,227 @@ class GazePipeline {
     out.eyeImages = images;
     return out;
   }
+}
+
+// ===== unittests =====
+// The unit tests of Basirah, built into the app: open the page with ?tests at the end of its link
+// (for example index.html?tests) to run them in the browser. They need no camera or trained model:
+// each test gives a function prepared inputs and compares its output with the expected result.
+
+// returns [{ name, ok, error }] (everything inside one function, so nothing clashes with the app)
+function runUnitTests() {
+  const results = [];
+  const test = (name, fn) => {
+    try { fn(); results.push({ name, ok: true }); } catch (e) { results.push({ name, ok: false, error: e.message }); }
+  };
+  const assert = {
+    ok: (v, msg = "expected true") => { if (!v) throw new Error(msg); },
+    equal: (a, b) => { if (a !== b) throw new Error(`${a} !== ${b}`); },
+    notEqual: (a, b) => { if (a === b) throw new Error(`${a} === ${b}`); },
+    deepEqual: (a, b) => { if (JSON.stringify(a) !== JSON.stringify(b)) throw new Error(`${JSON.stringify(a)} != ${JSON.stringify(b)}`); },
+  };
+
+  const SCREEN_MM = [287, 186], SCREEN_PT = [1470, 956], TOP = 10;
+  const close = (a, b, tol) => assert.ok(Math.abs(a - b) <= tol, `${a} is not within ${tol} of ${b}`);
+
+  // a synthetic user: eyes 550 mm in front of the screen; the "CNN" angles have a gain and an offset error
+  const EYE = [10, 120, 550];
+  function userRows(gain, offset, targets, perPoint = 5, noise = 0.05) {
+    const ref = new RayMapper(SCREEN_MM, TOP);
+    const rows = [];
+    targets.forEach((y, g) => {
+      for (let k = 0; k < perPoint; k++) {
+        const [yaw, pitch] = ref.trueAngles([0, 0, ...EYE], y);
+        const n = () => (Math.sin(g * 7 + k * 3) * noise);
+        rows.push({ x: [(yaw - offset[0]) / gain[0] + n(), (pitch - offset[1]) / gain[1] + n(), ...EYE], y, g });
+      }
+    });
+    return rows;
+  }
+  const grid4x4 = () => { const v = [0, 1, 2, 3].map((i) => 0.05 + (i * 0.9) / 3); return v.flatMap((y) => v.map((x) => [x, y])); };
+  const placementErr = (m, rows) => Math.max(...rows.map((r) => { const p = m.predict(r.x); return Math.hypot(p[0] - r.y[0], (p[1] - r.y[1]) * SCREEN_PT[1] / SCREEN_PT[0]); }));
+
+  test("UT01 Angles: gaze angles converted to a direction and back give the same angles", () => {
+    for (const [p, y] of [[0, 0], [0.2, -0.3], [-0.4, 0.5]]) {
+      const [p2, y2] = vectorToPitchYaw(pitchYawToVector([p, y]));
+      close(p2, p, 1e-9); close(y2, y, 1e-9);
+    }
+  });
+
+  test("UT02 Matrices: a 3x3 matrix times its inverse gives the identity", () => {
+    const M = [[2, 1, 0], [1, 3, 1], [0, 1, 4]];
+    const I = matMul(M, inv3(M));
+    I.forEach((row, i) => row.forEach((v, j) => close(v, i === j ? 1 : 0, 1e-12)));
+  });
+
+  test("UT03 Head pose: a face placed at a known pose is found again within 0.1 degree and 1 mm", () => {
+    const K = cameraMatrix(1920, 1080);
+    const model = sortModelPoints(FACE_MODEL_3D);
+    const rvec = [rad(10), rad(-15), rad(3)], tvec = [20, 40, 550];
+    const R = rodrigues(rvec);
+    const pts = model.map((X) => { const p = [0, 1, 2].map((i) => R[i][0] * X[0] + R[i][1] * X[1] + R[i][2] * X[2] + tvec[i]);
+      return [K[0][0] * p[0] / p[2] + K[0][2], K[1][1] * p[1] / p[2] + K[1][2]]; });
+    const est = new HeadPoseEstimator(K).estimate(pts, false);
+    est.rvec.forEach((v, i) => close(deg(v), deg(rvec[i]), 0.1));
+    est.tvec.forEach((v, i) => close(v, tvec[i], 1));
+  });
+
+  test("UT04 Eye images: an eye is warped into a 36x60 image", () => {
+    const w = 200, h = 120, data = new Uint8Array(w * h).map((_, i) => (i % w) % 256);
+    const out = warpEye({ data, w, h, x0: 0, y0: 0 }, [[1, 0, -50], [0, 1, -40], [0, 0, 1]]);
+    assert.equal(out.length, ROI_W * ROI_H); assert.equal(ROI_W, 60); assert.equal(ROI_H, 36);
+    close(out[0], 50, 1);  // the output pixel (0, 0) samples the input at (50, 40)
+  });
+
+  test("UT05 Eye images: histogram equalisation spreads a dark image over 0 to 255", () => {
+    const img = new Uint8Array(ROI_W * ROI_H).map((_, i) => 40 + (i % 20));
+    const eq = equalizeHist(img);
+    assert.equal(Math.max(...eq), 255);
+    assert.ok(Math.min(...eq) < 20);
+  });
+
+  test("UT06 Calibration: the 16 calibration targets are all different and cover the screen from 5% to 95%", () => {
+    const t = grid4x4();
+    assert.equal(new Set(t.map((p) => p.join())).size, 16);
+    close(Math.min(...t.flat()), 0.05, 1e-9); close(Math.max(...t.flat()), 0.95, 1e-9);
+  });
+
+  test("UT07 Calibration: a screen point turned into gaze angles and back lands on the same point", () => {
+    const m = new RayMapper(SCREEN_MM, TOP);
+    for (const y of [[0.1, 0.2], [0.5, 0.5], [0.9, 0.8]]) {
+      const p = m.screenFromAngles(m.trueAngles([0, 0, ...EYE], y), EYE);
+      close(p[0], y[0], 1e-9); close(p[1], y[1], 1e-9);
+    }
+  });
+
+  test("UT08 Calibration: for a user whose gaze angles have a gain and an offset error, every point is placed within 1% of the screen width", () => {
+    const rows = userRows([0.9, 1.15], [1.5, -2.5], grid4x4());
+    const m = fitRay(rows, SCREEN_MM, TOP, SCREEN_PT);
+    assert.ok(placementErr(m, rows) < 0.01);
+  });
+
+  test("UT09 Calibration quality: with a good calibration, every point is hit by a model fitted on the other points", () => {
+    const rows = userRows([0.9, 1.15], [1.5, -2.5], grid4x4());
+    const m = fitRay(rows, SCREEN_MM, TOP, SCREEN_PT);
+    const q = calibrationQuality(rows, m, SCREEN_PT, 0.15);
+    assert.equal(q.hits, 16); assert.equal(verdict(q), "good");
+  });
+
+  test("UT10 Quick correction: when the gaze error changes on another day, three points bring it back below 1% of the screen width", () => {
+    const m = fitRay(userRows([0.9, 1.15], [1.5, -2.5], grid4x4()), SCREEN_MM, TOP, SCREEN_PT);
+    const today = (t) => userRows([0.9, 1.15], [3.5, -0.5], t);  // the offset moved by 2 degrees
+    const all = today(grid4x4());
+    assert.ok(placementErr(m, all) > 0.02);
+    const q = quickCorrection(m, today([[0.5, 1 / 6], [1 / 6, 5 / 6], [5 / 6, 5 / 6]]));
+    assert.ok(placementErr(q, all) < 0.01);
+  });
+
+  test("UT11 Profile: one mapping fitted on three sittings, plus a quick correction, places every point within 1% of the screen width", () => {
+    const offsets = [[1.5, -2.5], [2.5, -1.5], [1.0, -3.0]];
+    const cals = offsets.map((o) => { const r = userRows([0.9, 1.15], o, grid4x4(), 1); return r.map((x) => ({ x: x.x, y: x.y })); });
+    const prof = fitProfile(cals, SCREEN_MM, TOP, SCREEN_PT);
+    const newDay = [2.0, -2.0];
+    const q = quickCorrection(prof, userRows([0.9, 1.15], newDay, [[0.5, 1 / 6], [1 / 6, 5 / 6], [5 / 6, 5 / 6]]));
+    assert.ok(placementErr(q, userRows([0.9, 1.15], newDay, grid4x4())) < 0.01);
+  });
+
+  test("UT12 Smoothing: a still gaze point stays the same after the filter", () => {
+    const f = new OneEuroFilter();
+    let out;
+    for (let i = 0; i < 60; i++) out = f.filter([0.4, 0.6], i / 30);
+    close(out[0], 0.4, 1e-9); close(out[1], 0.6, 1e-9);
+  });
+
+  test("UT13 Smoothing: jitter on a fixed point is reduced by more than half", () => {
+    const f = new OneEuroFilter();
+    const raw = [], smooth = [];
+    for (let i = 0; i < 300; i++) {
+      const x = 0.5 + 0.01 * Math.sin(i * 2.1) + 0.01 * Math.cos(i * 3.7);
+      raw.push(x); smooth.push(f.filter([x, 0.5], i / 30)[0]);
+    }
+    const sd = (v) => { const m = v.reduce((a, b) => a + b) / v.length; return Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / v.length); };
+    assert.ok(sd(smooth.slice(30)) < sd(raw.slice(30)) / 2);
+  });
+
+  test("UT14 Smoothing: after the eyes jump to another tile, the filtered point reaches it within 0.5 s", () => {
+    const f = new OneEuroFilter();
+    for (let i = 0; i < 30; i++) f.filter([0.17, 0.5], i / 30);
+    let t = null;
+    for (let i = 30; i < 90; i++) { const p = f.filter([0.83, 0.5], i / 30); if (t === null && Math.abs(p[0] - 0.83) < 0.05) t = (i - 30) / 30; }
+    assert.ok(t !== null && t <= 0.5, `reached after ${t} s`);
+  });
+
+  test("UT15 Blinks: during a blink the gaze point is held in place", () => {
+    const est = new GazeEstimator({ predict: (x) => [x[0], x[1]] });
+    const a = est.update({ b_yaw: 0.3, b_pitch: 0.4, b_ox: 0, b_oy: 0, b_oz: 500 }, 0, 0);
+    const b = est.update({ b_yaw: 0.9, b_pitch: 0.9, b_ox: 0, b_oy: 0, b_oz: 500 }, 0.033, 0.9);
+    assert.deepEqual(b.smooth, a.smooth); assert.equal(b.blink, true);
+  });
+
+  test("UT16 Board: the centre of each tile falls in that tile; the sentence band and points outside the screen select nothing", () => {
+    const L = new GridLayout(3, 3, 0.15);
+    for (let i = 0; i < 9; i++) assert.equal(L.cellAt(...L.center(i)), i);
+    assert.equal(L.cellAt(0.5, 0.05), null);
+    assert.equal(L.cellAt(1.5, 0.5), null);
+  });
+
+  test("UT17 Board: the phrases are placed from right to left, starting at the top right", () => {
+    const cells = new GridLayout(3, 3, 0.15).rtl(MAIN_BOARD);
+    assert.equal(cells[2].label, MAIN_BOARD[0].label);
+    assert.equal(cells[0].label, MAIN_BOARD[2].label);
+    assert.equal(cells[5].label, MAIN_BOARD[3].label);
+  });
+
+  test("UT18 Dwell: a tile looked at continuously is selected after 1 second", () => {
+    const d = new DwellSelector(9);
+    let sel = null, at = null;
+    for (let i = 0; i <= 45 && sel === null; i++) { sel = d.update(4, i / 30); if (sel !== null) at = i / 30; }
+    assert.equal(sel, 4); close(at, 1.0, 0.04);
+  });
+
+  test("UT19 Dwell: a glance away of 0.2 s does not reset the progress of the tile", () => {
+    const d = new DwellSelector(9);
+    let t = 0;
+    for (; t < 0.6; t += 1 / 30) d.update(4, t);
+    const before = d.progress[4];
+    for (const end = t + 0.2; t < end; t += 1 / 30) d.update(1, t);
+    assert.ok(d.progress[4] >= before - 1e-9);
+  });
+
+  test("UT20 Dwell: nothing is selected in the 0.6 s after a selection", () => {
+    const d = new DwellSelector(9);
+    let t = 0, first = null;
+    for (; first === null; t += 1 / 30) first = d.update(4, t);
+    const firstAt = t;
+    for (; t < firstAt + 0.6; t += 1 / 30) assert.equal(d.update(4, t), null);
+  });
+
+  test("UT21 3x3 test: the 36 trials show each of the nine cells four times, never the same cell twice in a row", () => {
+    for (let k = 0; k < 20; k++) {
+      const o = trialOrder();
+      assert.equal(o.length, 36);
+      for (let c = 0; c < 9; c++) assert.equal(o.filter((x) => x === c).length, 4);
+      for (let i = 1; i < o.length; i++) assert.notEqual(o[i], o[i - 1]);
+    }
+  });
+
+  test("UT22 3x3 test: the 95% confidence interval of 36 hits in 36 trials is 90.4% to 100%", () => {
+    const [lo, hi] = wilson(36, 36);
+    close(lo, 90.4, 0.05); close(hi, 100, 1e-9);
+  });
+
+  test("UT23 3x3 test: the dwell simulation selects the looked-at cell and counts a wrong cell as an error", () => {
+    const trials = [0, 4, 8];
+    const frames = [], pos = [];
+    trials.forEach((target, k) => {
+      const looked = k === 2 ? 6 : target;  // in the third trial the gaze is on a wrong cell
+      for (let i = 0; i < 90; i++) { frames.push({ trial: k, tOnset: i / 30 }); pos.push(TEST_LAYOUT.center(looked)); }
+    });
+    const s = score(simulateDwell(frames, trials, pos));
+    assert.equal(s.hits, 2); assert.equal(s.trials, 3);
+    close(s.wrong_rate, 100 / 3, 1e-9);
+  });
+  return results;
 }
 
 // ===== app =====
@@ -1402,6 +1623,8 @@ function useMapper(m, kind = "calibration") {
 
 // ---------------------------------------------------------------------- result
 let resultUntil = null;
+// the 3x3 test is an evaluation mode for the developer: index.html?test (hidden from users)
+const TEST_MODE = new URLSearchParams(location.search).has("test");
 function showResult(kind, q, note = "") {
   const v = q ? verdict(q) : "weak";
   const title = { good: "معايرة جيدة", ok: "معايرة مقبولة", weak: "يُنصح بمعايرة جديدة" }[v];
@@ -1410,7 +1633,7 @@ function showResult(kind, q, note = "") {
     ? `${q.hits} من ${q.nPoints} نقطة أصابت دون أن يراها النموذج أثناء التدريب`
     : `${q.hits} من ${q.nPoints} نقاط أصابت، كل نقطة صُحّحت بالنقاط الأخرى فقط`);
   $("btn-requick").style.display = kind === "quick" ? "" : "none";
-  resultUntil = v === "weak" ? null : performance.now() / 1000 + 4;
+  resultUntil = v === "weak" || TEST_MODE ? null : performance.now() / 1000 + 4;  // in test mode: wait for T
   show("result");
 }
 function onResultFrame(r) {
@@ -1543,6 +1766,10 @@ function finishTest() {
   const t = test;
   test = null;
   lastTest = evaluate(t, app.mapper, screenPt());
+  // which device the test was made on (several laptops and phones can be compared)
+  lastTest.device = { name: settings.device || "", screen_pt: screenPt(), screen_width_mm: Math.round(screenMm()[0]),
+                      camera: app.cam.label, camera_size: [app.cam.width, app.cam.height],
+                      touch: TOUCH, browser: navigator.userAgent };
   const s = lastTest.score, [lo, hi] = lastTest.hit_rate_ci95, e = lastTest.errors.filtered;
   $("test-hit").textContent = `نسبة الإصابة ${s.hit_rate.toFixed(0)}٪ (${s.hits} من ${s.trials})`;
   $("test-detail").textContent = `فترة الثقة 95٪: ${lo.toFixed(0)}–${hi.toFixed(0)}٪ · اختيار خاطئ ${s.wrong_rate.toFixed(0)}٪ · بدون اختيار ${s.timeout_rate.toFixed(0)}٪\n` +
@@ -1578,11 +1805,11 @@ document.addEventListener("keydown", (e) => {
     else if (k === "Escape") { test = null; showStart(); }
   } else if (app.screen === "testresult") {
     if (k === " ") { e.preventDefault(); startBoard(); }
-    else if (k.toLowerCase() === "t") startTest();
+    else if (k.toLowerCase() === "t" && TEST_MODE) startTest();
     else if (k === "Escape") showStart();
   } else if (app.screen === "result") {
     if (k === " ") { e.preventDefault(); startBoard(); }
-    else if (k.toLowerCase() === "t") startTest();
+    else if (k.toLowerCase() === "t" && TEST_MODE) startTest();
     else if (k.toLowerCase() === "r") startCalibration();
     else if (k.toLowerCase() === "q") startQuick();
     else if (k === "Escape") showStart();
@@ -1608,6 +1835,7 @@ $("btn-recal").onclick = startCalibration;
 $("btn-requick").onclick = startQuick;
 $("btn-retry").onclick = () => location.reload();
 $("btn-test").onclick = startTest;
+if (!TEST_MODE) $("btn-test").style.display = "none";
 $("btn-test-again").onclick = startTest;
 $("btn-test-board").onclick = startBoard;
 $("btn-test-save").onclick = saveTest;
@@ -1627,6 +1855,8 @@ if (TOUCH) {
 }
 $("set-width").value = (settings.screenWidthCm ?? screenMm()[0] / 10).toFixed(1);
 $("set-width").onchange = (e) => { settings.screenWidthCm = parseFloat(e.target.value) || null; saveSettings(); };
+$("set-device").value = settings.device || "";
+$("set-device").onchange = (e) => { settings.device = e.target.value.trim(); saveSettings(); };
 $("set-dwell").value = settings.dwell_s;
 $("set-dwell").onchange = (e) => { settings.dwell_s = Math.min(2.5, Math.max(0.6, parseFloat(e.target.value) || 1)); saveSettings(); };
 $("btn-forget").onclick = () => { store.set("calibrations", []); app.mapper = null; showStart(); };
@@ -1664,9 +1894,24 @@ for (const ev of ["click", "keydown"]) {
   });
 }
 
+// index.html?tests: run the unit tests in this browser and show their results (no camera needed)
+function showUnitTests() {
+  const r = runUnitTests(), passed = r.filter((t) => t.ok).length;
+  $("message-icon").innerHTML = iconSvg(passed === r.length ? "check" : "x");
+  $("message-icon").style.color = passed === r.length ? "var(--yes)" : "var(--no)";
+  $("message-title").textContent = `اختبارات الوحدة: نجح ${passed} من ${r.length}`;
+  const body = $("message-body");
+  body.textContent = r.map((t) => `${t.ok ? "✔" : "✘"} ${t.name}${t.ok ? "" : " — " + t.error}`).join("\n");
+  Object.assign(body.style, { direction: "ltr", textAlign: "left", fontSize: "13px", lineHeight: "1.7" });
+  $("btn-retry").style.display = "none";
+  show("message");
+  console.log(`unit tests: ${passed} of ${r.length} passed`);
+}
+
 async function boot() {
   buildGrid();
   await loadFonts();
+  if (new URLSearchParams(location.search).has("tests")) return showUnitTests();
   const status = (t) => { $("loading-text").textContent = t + "…"; };
   try {
     status("فتح الكاميرا");
@@ -1723,8 +1968,9 @@ boot();
         </div>
         <details class="settings">
           <summary>إعدادات</summary>
-          <label>عرض الشاشة بالسنتيمتر <input id="set-width" type="number" step="0.1" min="15" max="80"></label>
+          <label>عرض الشاشة بالسنتيمتر <input id="set-width" type="number" step="0.1" min="4" max="80"></label>
           <p class="muted small">قِس عرض الجزء المضيء من الشاشة. الافتراضي لشاشة ماك بوك إير 13 إنش.</p>
+          <label>اسم الجهاز (يُحفظ مع نتيجة الاختبار) <input id="set-device" type="text" placeholder="مثلًا iPhone 13 Pro" style="width:10em"></label>
           <label>زمن التحديق بالثواني <input id="set-dwell" type="number" step="0.1" min="0.6" max="2.5"></label>
           <button id="btn-forget" class="small-btn">حذف معايراتي من هذا المتصفح</button>
         </details>
